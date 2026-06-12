@@ -1,181 +1,128 @@
 package goufw
 
-import "fmt"
-
-// ---------------------------------------------------------------------------
-// PortBuilder
-// ---------------------------------------------------------------------------
-
+// PortBuilder starts a port rule chain (legacy API).
+//
+//	fw.Port(22).Allow().TCP().Apply()
 type PortBuilder struct {
 	fw   *Firewall
 	port uint16
 }
 
+// Allow starts an allow rule chain for this port.
 func (b *PortBuilder) Allow() *PortActionBuilder {
-	return &PortActionBuilder{fw: b.fw, port: b.port, action: actionAllow}
+	return &PortActionBuilder{fw: b.fw, port: b.port, action: Allow}
 }
 
+// Deny starts a deny rule chain for this port.
 func (b *PortBuilder) Deny() *PortActionBuilder {
-	return &PortActionBuilder{fw: b.fw, port: b.port, action: actionDeny}
+	return &PortActionBuilder{fw: b.fw, port: b.port, action: Deny}
 }
 
+// Delete starts a delete chain for this port.
+//
+//	deleted, _ := fw.Port(22).Delete().TCP().Apply()
 func (b *PortBuilder) Delete() *PortDeleteBuilder {
-	return &PortDeleteBuilder{port: b.port}
+	return &PortDeleteBuilder{fw: b.fw, port: b.port}
 }
 
+// Status starts a status query chain for this port.
+//
+//	status, _ := fw.Port(22).Status().TCP()
 func (b *PortBuilder) Status() *PortStatus {
 	return &PortStatus{fw: b.fw, port: b.port}
 }
 
-// ---------------------------------------------------------------------------
-// PortActionBuilder — allow / deny
-// ---------------------------------------------------------------------------
-
+// PortActionBuilder selects the protocol for a port allow/deny rule.
 type PortActionBuilder struct {
 	fw     *Firewall
 	port   uint16
-	action action
+	action Action
 }
 
+// TCP selects TCP protocol.
 func (b *PortActionBuilder) TCP() *PortFinalizer {
-	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: ProtocolTCP}
+	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: TCP}
 }
 
+// UDP selects UDP protocol.
 func (b *PortActionBuilder) UDP() *PortFinalizer {
-	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: ProtocolUDP}
+	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: UDP}
 }
 
+// Both selects both TCP and UDP protocols.
 func (b *PortActionBuilder) Both() *PortFinalizer {
-	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: ProtocolBoth}
+	return &PortFinalizer{fw: b.fw, port: b.port, action: b.action, protocol: Both}
 }
 
+// PortFinalizer applies a port allow/deny rule.
 type PortFinalizer struct {
 	fw       *Firewall
 	port     uint16
-	action   action
+	action   Action
 	protocol Protocol
 }
 
+// Apply executes the port rule.
 func (f *PortFinalizer) Apply() error {
-	protocols := protoStrings(f.protocol)
-	actionStr := actionString(f.action)
-	var runner commandRunner
-	for _, proto := range protocols {
-		rule := fmt.Sprintf("%d/%s", f.port, proto)
-		if err := runner.run("sudo", "ufw", actionStr, rule); err != nil {
-			return err
-		}
+	switch f.action {
+	case Allow:
+		return f.fw.AllowPort(f.port, f.protocol, "")
+	case Deny:
+		return f.fw.DenyPort(f.port, f.protocol, "")
 	}
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// PortDeleteBuilder
-// ---------------------------------------------------------------------------
-
+// PortDeleteBuilder selects the protocol for a port delete operation.
 type PortDeleteBuilder struct {
+	fw   *Firewall
 	port uint16
 }
 
+// TCP selects TCP protocol for delete.
 func (b *PortDeleteBuilder) TCP() *PortDeleteFinalizer {
-	return &PortDeleteFinalizer{port: b.port, protocol: ProtocolTCP}
+	return &PortDeleteFinalizer{fw: b.fw, port: b.port, protocol: TCP}
 }
 
+// UDP selects UDP protocol for delete.
 func (b *PortDeleteBuilder) UDP() *PortDeleteFinalizer {
-	return &PortDeleteFinalizer{port: b.port, protocol: ProtocolUDP}
+	return &PortDeleteFinalizer{fw: b.fw, port: b.port, protocol: UDP}
 }
 
+// Both selects both TCP and UDP for delete.
 func (b *PortDeleteBuilder) Both() *PortDeleteFinalizer {
-	return &PortDeleteFinalizer{port: b.port, protocol: ProtocolBoth}
+	return &PortDeleteFinalizer{fw: b.fw, port: b.port, protocol: Both}
 }
 
+// PortDeleteFinalizer runs a port delete.
 type PortDeleteFinalizer struct {
+	fw       *Firewall
 	port     uint16
 	protocol Protocol
 }
 
+// Apply executes the delete. Returns true if a rule was actually removed.
 func (f *PortDeleteFinalizer) Apply() (bool, error) {
-	var results []deleteResult
-
-	switch f.protocol {
-	case ProtocolTCP:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", fmt.Sprintf("%d/tcp", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "deny", fmt.Sprintf("%d/tcp", f.port)),
-		)
-	case ProtocolUDP:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", fmt.Sprintf("%d/udp", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "deny", fmt.Sprintf("%d/udp", f.port)),
-		)
-	case ProtocolBoth:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", fmt.Sprintf("%d", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "deny", fmt.Sprintf("%d", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "allow", fmt.Sprintf("%d/tcp", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "deny", fmt.Sprintf("%d/tcp", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "allow", fmt.Sprintf("%d/udp", f.port)),
-			deleteResultOf("sudo", "ufw", "delete", "deny", fmt.Sprintf("%d/udp", f.port)),
-		)
-	}
-	return combineDeleteOutcomes(results)
+	return f.fw.backend.DeletePort(f.port, f.protocol)
 }
 
-// ---------------------------------------------------------------------------
-// PortStatus
-// ---------------------------------------------------------------------------
-
+// PortStatus queries the status of a port.
 type PortStatus struct {
 	fw   *Firewall
 	port uint16
 }
 
-func (s *PortStatus) TCP() (RuleStatus, error) {
-	rules, err := s.fw.Ports()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findPortStatus(rules, s.port, ProtocolTCP), nil
+// TCP returns the status for TCP on this port.
+func (s *PortStatus) TCP() (Status, error) {
+	return s.fw.GetPortStatus(s.port, TCP)
 }
 
-func (s *PortStatus) UDP() (RuleStatus, error) {
-	rules, err := s.fw.Ports()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findPortStatus(rules, s.port, ProtocolUDP), nil
+// UDP returns the status for UDP on this port.
+func (s *PortStatus) UDP() (Status, error) {
+	return s.fw.GetPortStatus(s.port, UDP)
 }
 
-func (s *PortStatus) Both() (RuleStatus, error) {
-	rules, err := s.fw.Ports()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findPortStatus(rules, s.port, ProtocolBoth), nil
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func protoStrings(p Protocol) []string {
-	switch p {
-	case ProtocolTCP:
-		return []string{"tcp"}
-	case ProtocolUDP:
-		return []string{"udp"}
-	case ProtocolBoth:
-		return []string{"tcp", "udp"}
-	}
-	return nil
-}
-
-func actionString(a action) string {
-	switch a {
-	case actionAllow:
-		return "allow"
-	case actionDeny:
-		return "deny"
-	}
-	return ""
+// Both returns the status for both TCP and UDP on this port.
+func (s *PortStatus) Both() (Status, error) {
+	return s.fw.GetPortStatus(s.port, Both)
 }

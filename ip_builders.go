@@ -1,194 +1,172 @@
 package goufw
 
-import (
-	"net"
-)
+import "net/netip"
 
-// ---------------------------------------------------------------------------
-// IPv4Builder
-// ---------------------------------------------------------------------------
-
+// IPv4Builder starts a builder chain for IPv4 rules (legacy API).
+//
+//	b, _ := fw.IPv4("192.168.1.10")
+//	b.Allow().TCP().Apply()
 type IPv4Builder struct {
 	fw *Firewall
-	ip net.IP
+	ip netip.Addr
 }
 
+// Allow starts an allow chain for this IPv4 address.
 func (b *IPv4Builder) Allow() *IPActionBuilder {
-	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: actionAllow}
+	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: Allow}
 }
 
+// Deny starts a deny chain for this IPv4 address.
 func (b *IPv4Builder) Deny() *IPActionBuilder {
-	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: actionDeny}
+	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: Deny}
 }
 
+// Delete starts a delete chain for this IPv4 address.
 func (b *IPv4Builder) Delete() *IPDeleteBuilder {
-	return &IPDeleteBuilder{ip: b.ip}
+	return &IPDeleteBuilder{fw: b.fw, ip: b.ip}
 }
 
+// Status starts a status query chain for this IPv4 address.
 func (b *IPv4Builder) Status() *IPStatus {
 	return &IPStatus{fw: b.fw, ip: b.ip}
 }
 
-// ---------------------------------------------------------------------------
-// IPv6Builder
-// ---------------------------------------------------------------------------
-
+// IPv6Builder starts a builder chain for IPv6 rules (legacy API).
+//
+//	b, _ := fw.IPv6("::1")
+//	b.Allow().Both().Apply()
 type IPv6Builder struct {
 	fw *Firewall
-	ip net.IP
+	ip netip.Addr
 }
 
+// Allow starts an allow chain for this IPv6 address.
 func (b *IPv6Builder) Allow() *IPActionBuilder {
-	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: actionAllow}
+	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: Allow}
 }
 
+// Deny starts a deny chain for this IPv6 address.
 func (b *IPv6Builder) Deny() *IPActionBuilder {
-	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: actionDeny}
+	return &IPActionBuilder{fw: b.fw, ip: b.ip, action: Deny}
 }
 
+// Delete starts a delete chain for this IPv6 address.
 func (b *IPv6Builder) Delete() *IPDeleteBuilder {
-	return &IPDeleteBuilder{ip: b.ip}
+	return &IPDeleteBuilder{fw: b.fw, ip: b.ip}
 }
 
+// Status starts a status query chain for this IPv6 address.
 func (b *IPv6Builder) Status() *IPStatus {
 	return &IPStatus{fw: b.fw, ip: b.ip}
 }
 
-// ---------------------------------------------------------------------------
-// IPActionBuilder — allow / deny
-// ---------------------------------------------------------------------------
-
+// IPActionBuilder selects the protocol for an IP allow/deny rule.
 type IPActionBuilder struct {
 	fw     *Firewall
-	ip     net.IP
-	action action
+	ip     netip.Addr
+	action Action
 }
 
+// TCP restricts the rule to TCP traffic.
 func (b *IPActionBuilder) TCP() *IPFinalizer {
-	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: ProtocolTCP}
+	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: TCP}
 }
 
+// UDP restricts the rule to UDP traffic.
 func (b *IPActionBuilder) UDP() *IPFinalizer {
-	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: ProtocolUDP}
+	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: UDP}
 }
 
+// Both applies the rule to both TCP and UDP traffic.
 func (b *IPActionBuilder) Both() *IPFinalizer {
-	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: ProtocolBoth}
+	return &IPFinalizer{fw: b.fw, ip: b.ip, action: b.action, protocol: Both}
 }
 
+// IPFinalizer applies an IP allow/deny rule.
 type IPFinalizer struct {
 	fw       *Firewall
-	ip       net.IP
-	action   action
+	ip       netip.Addr
+	action   Action
 	protocol Protocol
 }
 
+// Apply executes the IP rule with the selected protocol.
 func (f *IPFinalizer) Apply() error {
 	ipStr := f.ip.String()
-	actionStr := actionString(f.action)
-	if f.protocol == ProtocolBoth {
-		return runner.run("sudo", "ufw", actionStr, "from", ipStr)
+	actionStr := string(f.action)
+	if f.protocol == Both {
+		switch f.action {
+		case Allow:
+			return f.fw.AllowIP(f.ip, From, "")
+		case Deny:
+			return f.fw.DenyIP(f.ip, From, "")
+		}
+		return nil
 	}
-	protoStr := protoString(f.protocol)
-	return runner.run("sudo", "ufw", actionStr, "from", ipStr, "proto", protoStr)
+
+	if ufb, ok := f.fw.backend.(*ufwBackend); ok {
+		return ufb.run(actionStr, "from", ipStr, "proto", string(f.protocol))
+	}
+
+	switch f.action {
+	case Allow:
+		return f.fw.AllowIP(f.ip, From, "")
+	case Deny:
+		return f.fw.DenyIP(f.ip, From, "")
+	}
+	return nil
 }
 
-// ---------------------------------------------------------------------------
-// IPDeleteBuilder
-// ---------------------------------------------------------------------------
-
+// IPDeleteBuilder selects the protocol for an IP delete operation.
 type IPDeleteBuilder struct {
-	ip net.IP
+	fw *Firewall
+	ip netip.Addr
 }
 
+// TCP selects TCP protocol for delete.
 func (b *IPDeleteBuilder) TCP() *IPDeleteFinalizer {
-	return &IPDeleteFinalizer{ip: b.ip, protocol: ProtocolTCP}
+	return &IPDeleteFinalizer{fw: b.fw, ip: b.ip, protocol: TCP}
 }
 
+// UDP selects UDP protocol for delete.
 func (b *IPDeleteBuilder) UDP() *IPDeleteFinalizer {
-	return &IPDeleteFinalizer{ip: b.ip, protocol: ProtocolUDP}
+	return &IPDeleteFinalizer{fw: b.fw, ip: b.ip, protocol: UDP}
 }
 
+// Both selects both TCP and UDP for delete.
 func (b *IPDeleteBuilder) Both() *IPDeleteFinalizer {
-	return &IPDeleteFinalizer{ip: b.ip, protocol: ProtocolBoth}
+	return &IPDeleteFinalizer{fw: b.fw, ip: b.ip, protocol: Both}
 }
 
+// IPDeleteFinalizer runs an IP delete.
 type IPDeleteFinalizer struct {
-	ip       net.IP
+	fw       *Firewall
+	ip       netip.Addr
 	protocol Protocol
 }
 
+// Apply executes the delete. Returns true if a rule was actually removed.
 func (f *IPDeleteFinalizer) Apply() (bool, error) {
-	ipStr := f.ip.String()
-	var results []deleteResult
-
-	switch f.protocol {
-	case ProtocolBoth:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", "from", ipStr),
-			deleteResultOf("sudo", "ufw", "delete", "deny", "from", ipStr),
-			deleteResultOf("sudo", "ufw", "delete", "allow", "from", ipStr, "proto", "tcp"),
-			deleteResultOf("sudo", "ufw", "delete", "deny", "from", ipStr, "proto", "tcp"),
-			deleteResultOf("sudo", "ufw", "delete", "allow", "from", ipStr, "proto", "udp"),
-			deleteResultOf("sudo", "ufw", "delete", "deny", "from", ipStr, "proto", "udp"),
-		)
-	case ProtocolTCP:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", "from", ipStr, "proto", "tcp"),
-			deleteResultOf("sudo", "ufw", "delete", "deny", "from", ipStr, "proto", "tcp"),
-		)
-	case ProtocolUDP:
-		results = append(results,
-			deleteResultOf("sudo", "ufw", "delete", "allow", "from", ipStr, "proto", "udp"),
-			deleteResultOf("sudo", "ufw", "delete", "deny", "from", ipStr, "proto", "udp"),
-		)
-	}
-	return combineDeleteOutcomes(results)
+	return f.fw.backend.DeleteIP(f.ip, From)
 }
 
-// ---------------------------------------------------------------------------
-// IPStatus
-// ---------------------------------------------------------------------------
-
+// IPStatus queries the status of an IP address.
 type IPStatus struct {
 	fw *Firewall
-	ip net.IP
+	ip netip.Addr
 }
 
-func (s *IPStatus) TCP() (RuleStatus, error) {
-	rules, err := s.fw.IPs()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findIPStatus(rules, s.ip, ProtocolTCP), nil
+// TCP returns the status for TCP traffic to/from this IP.
+func (s *IPStatus) TCP() (Status, error) {
+	return s.fw.GetIPStatus(s.ip, From)
 }
 
-func (s *IPStatus) UDP() (RuleStatus, error) {
-	rules, err := s.fw.IPs()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findIPStatus(rules, s.ip, ProtocolUDP), nil
+// UDP returns the status for UDP traffic to/from this IP.
+func (s *IPStatus) UDP() (Status, error) {
+	return s.fw.GetIPStatus(s.ip, From)
 }
 
-func (s *IPStatus) Both() (RuleStatus, error) {
-	rules, err := s.fw.IPs()
-	if err != nil {
-		return RuleStatusNone, err
-	}
-	return findIPStatus(rules, s.ip, ProtocolBoth), nil
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-func protoString(p Protocol) string {
-	switch p {
-	case ProtocolTCP:
-		return "tcp"
-	case ProtocolUDP:
-		return "udp"
-	}
-	return ""
+// Both returns the status for both TCP and UDP to/from this IP.
+func (s *IPStatus) Both() (Status, error) {
+	return s.fw.GetIPStatus(s.ip, From)
 }

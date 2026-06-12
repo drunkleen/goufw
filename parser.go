@@ -1,7 +1,7 @@
 package goufw
 
 import (
-	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -24,8 +24,8 @@ func parseIsEnabled(raw string) (bool, error) {
 	}
 }
 
-func parsePortRules(raw string) ([]PortRule, error) {
-	var rules []PortRule
+func parseRules(raw string) ([]Rule, error) {
+	var rules []Rule
 	for _, line := range strings.Split(raw, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "[") {
@@ -36,162 +36,202 @@ func parsePortRules(raw string) ([]PortRule, error) {
 			continue
 		}
 		content := strings.TrimSpace(trimmed[idx+1:])
-		if r := parsePortRuleLine(content); r != nil {
+		if r := parseRuleLine(content); r != nil {
 			rules = append(rules, *r)
 		}
 	}
 	return rules, nil
 }
 
-func parsePortRuleLine(content string) *PortRule {
-	target, action := splitAtAction(content)
-	if target == "" {
+func parseRuleLine(content string) *Rule {
+	actionStr, actionStart := findAction(content)
+	if actionStr == "" {
 		return nil
 	}
-	target = strings.TrimSpace(target)
-	fields := strings.Fields(target)
-	if len(fields) == 0 {
-		return nil
-	}
-	portProto := fields[0]
-	portProto = strings.TrimSuffix(portProto, "(v6)")
 
-	parts := strings.SplitN(portProto, "/", 2)
-	if len(parts) != 2 {
-		return nil
+	target := strings.TrimSpace(content[:actionStart])
+	rest := strings.TrimSpace(content[actionStart+len(actionStr):])
+
+	var comment string
+	if idx := strings.Index(rest, "#"); idx >= 0 {
+		comment = strings.TrimSpace(rest[idx+1:])
+		rest = strings.TrimSpace(rest[:idx])
 	}
-	port, err := strconv.ParseUint(parts[0], 10, 16)
-	if err != nil {
-		return nil
-	}
-	var protocol Protocol
-	switch parts[1] {
-	case "tcp":
-		protocol = ProtocolTCP
-	case "udp":
-		protocol = ProtocolUDP
+
+	var act Action
+	var dir Direction
+	switch actionStr {
+	case "ALLOW IN":
+		act = Allow
+		dir = From
+	case "ALLOW OUT":
+		act = Allow
+		dir = To
+	case "DENY IN":
+		act = Deny
+		dir = From
+	case "DENY OUT":
+		act = Deny
+		dir = To
 	default:
 		return nil
 	}
-	return &PortRule{
-		Port:     uint16(port),
-		Protocol: protocol,
-		Status:   actionToStatus(action),
-	}
-}
 
-func parseIPRules(raw string) ([]IpRule, error) {
-	var rules []IpRule
-	for _, line := range strings.Split(raw, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "[") {
-			continue
-		}
-		idx := strings.IndexByte(trimmed, ']')
-		if idx < 0 {
-			continue
-		}
-		content := strings.TrimSpace(trimmed[idx+1:])
-		if r := parseIPRuleLine(content); r != nil {
-			rules = append(rules, *r)
-		}
-	}
-	return rules, nil
-}
-
-func parseIPRuleLine(content string) *IpRule {
-	target, action := splitAtAction(content)
-	if target == "" {
-		return nil
-	}
+	target = strings.TrimSuffix(strings.TrimSpace(target), "(v6)")
 	target = strings.TrimSpace(target)
-	if !strings.HasPrefix(target, "Anywhere") {
-		return nil
-	}
-	var marker string
-	switch action {
-	case actionAllow:
-		marker = "ALLOW IN"
-	case actionDeny:
-		marker = "DENY IN"
-	}
-	pos := strings.Index(content, marker)
-	if pos < 0 {
-		return nil
-	}
-	source := strings.TrimSpace(content[pos+len(marker):])
-	source = strings.TrimSuffix(source, " (v6)")
-	source = strings.TrimSpace(source)
+	rest = strings.TrimSuffix(strings.TrimSpace(rest), "(v6)")
+	rest = strings.TrimSpace(rest)
 
-	ip := net.ParseIP(source)
-	if ip == nil {
-		return nil
-	}
-	return &IpRule{
-		IP:       ip,
-		Protocol: ProtocolBoth,
-		Status:   actionToStatus(action),
-	}
-}
+	if strings.Contains(target, "/") {
+		// Extract port/proto from the last token if target has spaces
+		// (e.g. "172.17.0.1 53/udp" → portProto="53/udp", ipPart="172.17.0.1")
+		portProto := target
+		var ipPart string
+		if fields := strings.Fields(target); len(fields) >= 2 {
+			portProto = fields[len(fields)-1]
+			ipPart = strings.TrimSpace(strings.Join(fields[:len(fields)-1], " "))
+			ipPart = strings.TrimSuffix(ipPart, "(v6)")
+			ipPart = strings.TrimSpace(ipPart)
+		}
 
-func splitAtAction(content string) (string, action) {
-	if pos := strings.Index(content, "ALLOW IN"); pos >= 0 {
-		return content[:pos], actionAllow
-	}
-	if pos := strings.Index(content, "DENY IN"); pos >= 0 {
-		return content[:pos], actionDeny
-	}
-	return "", 0
-}
+		parts := strings.SplitN(portProto, "/", 2)
+		port, err := strconv.ParseUint(parts[0], 10, 16)
+		if err == nil {
+			var proto Protocol
+			switch parts[1] {
+			case "tcp":
+				proto = TCP
+			case "udp":
+				proto = UDP
+			default:
+				return nil
+			}
 
-func actionToStatus(a action) RuleStatus {
-	switch a {
-	case actionAllow:
-		return RuleStatusAllowed
-	case actionDeny:
-		return RuleStatusDenied
-	}
-	return RuleStatusNone
-}
-
-func findPortStatus(rules []PortRule, port uint16, protocol Protocol) RuleStatus {
-	if protocol == ProtocolBoth {
-		var tcpStatus, udpStatus *RuleStatus
-		for _, r := range rules {
-			if r.Port == port {
-				if r.Protocol == ProtocolTCP {
-					s := r.Status
-					tcpStatus = &s
-				} else if r.Protocol == ProtocolUDP {
-					s := r.Status
-					udpStatus = &s
+			// If target had an IP before port/proto, it's an IPPort rule
+			if ipPart != "" {
+				if ipAddr, err := netip.ParseAddr(ipPart); err == nil {
+					return &Rule{
+						Kind:      RuleKindIPPort,
+						Action:    act,
+						Status:    actionToStatus(act),
+						Protocol:  proto,
+						Port:      uint16(port),
+						IP:        ipAddr,
+						Direction: dir,
+						Comment:   comment,
+						Raw:       content,
+					}
 				}
 			}
-		}
-		if tcpStatus != nil && udpStatus != nil {
-			if *tcpStatus == RuleStatusAllowed && *udpStatus == RuleStatusAllowed {
-				return RuleStatusAllowed
+
+			// Check if rest is an IP (source for From, dest for To)
+			if sourceIP, err := netip.ParseAddr(rest); err == nil {
+				return &Rule{
+					Kind:      RuleKindIPPort,
+					Action:    act,
+					Status:    actionToStatus(act),
+					Protocol:  proto,
+					Port:      uint16(port),
+					IP:        sourceIP,
+					Direction: dir,
+					Comment:   comment,
+					Raw:       content,
+				}
 			}
-			if *tcpStatus == RuleStatusDenied && *udpStatus == RuleStatusDenied {
-				return RuleStatusDenied
+
+			return &Rule{
+				Kind:      RuleKindPort,
+				Action:    act,
+				Status:    actionToStatus(act),
+				Protocol:  proto,
+				Port:      uint16(port),
+				Direction: dir,
+				Comment:   comment,
+				Raw:       content,
 			}
-			return RuleStatusNone
 		}
-		return RuleStatusNone
-	}
-	for _, r := range rules {
-		if r.Port == port && r.Protocol == protocol {
-			return r.Status
+
+		if prefix, err := netip.ParsePrefix(target); err == nil {
+			return &Rule{
+				Kind:      RuleKindIPRange,
+				Action:    act,
+				Status:    actionToStatus(act),
+				Prefix:    prefix,
+				Direction: To,
+				Comment:   comment,
+				Raw:       content,
+			}
+		}
+
+		if sourcePrefix, err := netip.ParsePrefix(rest); err == nil {
+			return &Rule{
+				Kind:      RuleKindIPRange,
+				Action:    act,
+				Status:    actionToStatus(act),
+				Prefix:    sourcePrefix,
+				Direction: dir,
+				Comment:   comment,
+				Raw:       content,
+			}
 		}
 	}
-	return RuleStatusNone
+
+	if targetIP, err := netip.ParseAddr(target); err == nil {
+		return &Rule{
+			Kind:      RuleKindIP,
+			Action:    act,
+			Status:    actionToStatus(act),
+			IP:        targetIP,
+			Direction: To,
+			Comment:   comment,
+			Raw:       content,
+		}
+	}
+
+	if target == "Anywhere" || target == "0.0.0.0/0" || target == "::/0" {
+		if sourceIP, err := netip.ParseAddr(rest); err == nil {
+			return &Rule{
+				Kind:      RuleKindIP,
+				Action:    act,
+				Status:    actionToStatus(act),
+				IP:        sourceIP,
+				Direction: dir,
+				Comment:   comment,
+				Raw:       content,
+			}
+		}
+		if sourcePrefix, err := netip.ParsePrefix(rest); err == nil {
+			return &Rule{
+				Kind:      RuleKindIPRange,
+				Action:    act,
+				Status:    actionToStatus(act),
+				Prefix:    sourcePrefix,
+				Direction: dir,
+				Comment:   comment,
+				Raw:       content,
+			}
+		}
+	}
+
+	return nil
 }
 
-func findIPStatus(rules []IpRule, ip net.IP, protocol Protocol) RuleStatus {
-	for _, r := range rules {
-		if r.IP.Equal(ip) {
-			return r.Status
+func findAction(content string) (string, int) {
+	actions := []string{"ALLOW IN", "ALLOW OUT", "DENY IN", "DENY OUT"}
+	for _, a := range actions {
+		if pos := strings.Index(content, a); pos >= 0 {
+			return a, pos
 		}
 	}
-	return RuleStatusNone
+	return "", -1
+}
+
+func actionToStatus(a Action) Status {
+	switch a {
+	case Allow:
+		return StatusAllowed
+	case Deny:
+		return StatusDenied
+	}
+	return StatusNone
 }
