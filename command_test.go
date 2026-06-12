@@ -4,10 +4,6 @@ import (
 	"testing"
 )
 
-// ---------------------------------------------------------------------------
-// classifyDeleteOutput
-// ---------------------------------------------------------------------------
-
 func TestClassifyDeleted(t *testing.T) {
 	outcome, err := classifyDeleteOutput("Rule deleted\n", "", true)
 	if err != nil {
@@ -75,10 +71,6 @@ func TestClassifySuccessNoKnownMessage(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// combineDeleteOutcomes
-// ---------------------------------------------------------------------------
-
 func TestCombineAllDeleted(t *testing.T) {
 	ok, err := combineDeleteOutcomes([]deleteResult{
 		{Outcome: deleteOutcomeDeleted},
@@ -133,5 +125,12 @@ func TestCombineNotFoundOnlyError(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestDeleteResultStruct(t *testing.T) {
+	r := deleteResult{Outcome: deleteOutcomeDeleted}
+	if r.Outcome != deleteOutcomeDeleted {
+		t.Fatal("expected Deleted")
 	}
 }
