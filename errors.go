@@ -6,28 +6,43 @@ import (
 	"strings"
 )
 
+// ErrorKind classifies a UFW error for programmatic handling.
 type ErrorKind int
 
 const (
-	ErrIO                  ErrorKind = iota
-	ErrCommandFailed
-	ErrInvalidIPv4
-	ErrInvalidIPv6
-	ErrParse
-	ErrEmptyOutput
-	ErrUnexpectedStatusLine
+	ErrIO                   ErrorKind = iota // I/O or exec error
+	ErrCommandFailed                         // UFW command returned non-zero exit
+	ErrInvalidIPv4                           // Invalid IPv4 address string
+	ErrInvalidIPv6                           // Invalid IPv6 address string
+	ErrParse                                 // Failed to parse UFW output
+	ErrEmptyOutput                           // UFW returned empty output
+	ErrUnexpectedStatusLine                  // Unexpected UFW status line format
+	ErrUnsupported                           // Operation not supported by UFW
 )
 
+var (
+	ErrInvalidPort      = errors.New("invalid port")
+	ErrInvalidProtocol  = errors.New("invalid protocol")
+	ErrInvalidDirection = errors.New("invalid direction")
+	ErrInvalidIP        = errors.New("invalid IP")
+	ErrInvalidPrefix    = errors.New("invalid prefix")
+	ErrRuleNotFound     = errors.New("rule not found")
+	ErrUFWNotFound      = errors.New("ufw not installed")
+	ErrUnsupportedOp    = errors.New("unsupported operation")
+)
+
+// UfwError is returned when a UFW command fails.
+// Use errors.As to access structured fields.
 type UfwError struct {
-	Kind    ErrorKind
-	Message string
+	Kind    ErrorKind // Category of error
+	Message string    // Human-readable message
 
-	Program string
-	Args    []string
-	Stderr  string
-	Code    int
+	Program string   // UFW program name
+	Args    []string // Command arguments
+	Stderr  string   // Stderr output from UFW
+	Code    int      // Exit code (-1 if signal)
 
-	Err error
+	Err error // Wrapped error, if any
 }
 
 func (e *UfwError) Error() string {
@@ -81,12 +96,4 @@ var errEmptyOutput = &UfwError{Kind: ErrEmptyOutput}
 
 func newUnexpectedStatusLine(line string) *UfwError {
 	return &UfwError{Kind: ErrUnexpectedStatusLine, Message: line}
-}
-
-func isNotFound(err error) bool {
-	var ue *UfwError
-	if errors.As(err, &ue) {
-		return ue.Kind == ErrCommandFailed && ue.Code != 0
-	}
-	return false
 }

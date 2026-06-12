@@ -1,8 +1,9 @@
 package goufw
 
-type action int
+// Action specifies whether to allow or deny traffic.
+type Action string
 
 const (
-	actionAllow action = iota
-	actionDeny
+	Allow Action = "allow" // Allow traffic
+	Deny  Action = "deny"  // Deny traffic
 )

@@ -1,27 +1,10 @@
 package goufw
 
-import "fmt"
-
-type Protocol int
+// Protocol specifies a transport protocol for firewall rules.
+type Protocol string
 
 const (
-	ProtocolTCP  Protocol = iota // "tcp"
-	ProtocolUDP                  // "udp"
-	ProtocolBoth                 // "both"
+	TCP  Protocol = "tcp"  // TCP protocol
+	UDP  Protocol = "udp"  // UDP protocol
+	Both Protocol = "both" // Both TCP and UDP
 )
-
-func (p Protocol) String() string {
-	switch p {
-	case ProtocolTCP:
-		return "tcp"
-	case ProtocolUDP:
-		return "udp"
-	case ProtocolBoth:
-		return "both"
-	}
-	return fmt.Sprintf("Protocol(%d)", int(p))
-}
-
-func (p Protocol) IsTCP() bool { return p == ProtocolTCP }
-
-func (p Protocol) IsUDP() bool { return p == ProtocolUDP }

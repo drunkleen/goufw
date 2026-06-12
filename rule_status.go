@@ -1,23 +1,10 @@
 package goufw
 
-import "fmt"
-
-type RuleStatus int
+// Status represents a rule's current state after querying.
+type Status string
 
 const (
-	RuleStatusAllowed RuleStatus = iota
-	RuleStatusDenied
-	RuleStatusNone
+	StatusAllowed Status = "allowed" // Traffic is allowed by this rule
+	StatusDenied  Status = "denied"  // Traffic is denied by this rule
+	StatusNone    Status = "none"    // No matching rule exists
 )
-
-func (s RuleStatus) String() string {
-	switch s {
-	case RuleStatusAllowed:
-		return "Allowed"
-	case RuleStatusDenied:
-		return "Denied"
-	case RuleStatusNone:
-		return "None"
-	}
-	return fmt.Sprintf("RuleStatus(%d)", int(s))
-}
